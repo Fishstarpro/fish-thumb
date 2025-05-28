@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.yxc.thumbbackend.mapper.ThumbMapper">
+
+    <resultMap id="BaseResultMap" type="com.yxc.thumbbackend.model.entity.Thumb">
+            <id property="id" column="id" />
+            <result property="userid" column="userId" />
+            <result property="blogid" column="blogId" />
+            <result property="createtime" column="createTime" />
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id,userId,blogId,createTime
+    </sql>
+</mapper>
