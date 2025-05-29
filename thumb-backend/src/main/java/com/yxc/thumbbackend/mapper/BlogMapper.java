@@ -1,5 +1,9 @@
 package com.yxc.thumbbackend.mapper;
 
+import java.util.Map;
+
+import org.apache.ibatis.annotations.Param;
+
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.yxc.thumbbackend.model.entity.Blog;
 
@@ -11,6 +15,7 @@ import com.yxc.thumbbackend.model.entity.Blog;
 */
 public interface BlogMapper extends BaseMapper<Blog> {
 
+    void batchUpdateThumbCount(@Param("countMap") Map<Long, Long> countMap);
 }
 
 

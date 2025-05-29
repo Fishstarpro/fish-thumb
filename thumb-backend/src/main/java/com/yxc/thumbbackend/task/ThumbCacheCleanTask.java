@@ -1,18 +1,18 @@
 package com.yxc.thumbbackend.task;
 
-import cn.hutool.json.JSONUtil;
-import com.yxc.thumbbackend.constant.ThumbConstant;
-import com.yxc.thumbbackend.model.dto.ThumbCacheData;
-import jakarta.annotation.Resource;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.redis.core.Cursor;
-import org.springframework.data.redis.core.ScanOptions;
+import java.util.Map;
+import java.util.Set;
+
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
-import java.util.Map;
-import java.util.Set;
+import com.yxc.thumbbackend.constant.ThumbConstant;
+import com.yxc.thumbbackend.model.dto.ThumbCacheData;
+
+import cn.hutool.json.JSONUtil;
+import jakarta.annotation.Resource;
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * 点赞缓存清理定时任务

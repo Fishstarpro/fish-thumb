@@ -35,4 +35,13 @@ public interface ThumbConstant {
      */
     String BLOG_CREATE_TIME_KEY_PREFIX = "blog:createTime:";
   
+    /**
+     * 临时点赞记录key前缀
+     */
+    String TEMP_THUMB_KEY_PREFIX = "thumb:temp:%s";
+    
+    /**
+     * 用户点赞删除状态标记key前缀
+     */
+    String USER_THUMB_DELETED_KEY_PREFIX = "thumb:deleted:";
 }

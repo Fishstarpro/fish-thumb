@@ -1,29 +1,37 @@
 package com.yxc.thumbbackend.service.impl;
 
-import cn.hutool.json.JSONUtil;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
-import com.google.common.hash.BloomFilter;
-import com.yxc.thumbbackend.constant.ThumbConstant;
-import com.yxc.thumbbackend.exception.BusinessException;
-import com.yxc.thumbbackend.exception.ErrorCode;
-import com.yxc.thumbbackend.model.dto.DoThumbRequest;
-import com.yxc.thumbbackend.model.dto.ThumbCacheData;
-import com.yxc.thumbbackend.model.entity.Blog;
-import com.yxc.thumbbackend.model.entity.Thumb;
-import com.yxc.thumbbackend.mapper.ThumbMapper;
-import com.yxc.thumbbackend.model.entity.User;
-import com.yxc.thumbbackend.service.BlogService;
-import com.yxc.thumbbackend.service.ThumbService;
-import com.yxc.thumbbackend.service.UserService;
-import com.yxc.thumbbackend.utils.DistributedLockUtil;
-import jakarta.annotation.Resource;
-import jakarta.servlet.http.HttpServletRequest;
-import lombok.extern.slf4j.Slf4j;
+import java.util.Arrays;
+import java.util.List;
+
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.util.List;
+import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.google.common.hash.BloomFilter;
+import com.yxc.thumbbackend.constant.RedisLuaScriptConstant;
+import com.yxc.thumbbackend.constant.ThumbConstant;
+import com.yxc.thumbbackend.exception.BusinessException;
+import com.yxc.thumbbackend.exception.ErrorCode;
+import com.yxc.thumbbackend.mapper.ThumbMapper;
+import com.yxc.thumbbackend.model.dto.DoThumbRequest;
+import com.yxc.thumbbackend.model.dto.ThumbCacheData;
+import com.yxc.thumbbackend.model.entity.Blog;
+import com.yxc.thumbbackend.model.entity.Thumb;
+import com.yxc.thumbbackend.model.entity.User;
+import com.yxc.thumbbackend.model.enums.LuaStatusEnum;
+import com.yxc.thumbbackend.service.BlogService;
+import com.yxc.thumbbackend.service.ThumbService;
+import com.yxc.thumbbackend.service.UserService;
+import com.yxc.thumbbackend.utils.DistributedLockUtil;
+import com.yxc.thumbbackend.utils.RedisKeyUtil;
+
+import cn.hutool.core.date.DateTime;
+import cn.hutool.core.date.DateUtil;
+import cn.hutool.json.JSONUtil;
+import jakarta.annotation.Resource;
+import jakarta.servlet.http.HttpServletRequest;
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * @author fishstar
@@ -65,6 +73,158 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb>
 
     @Override
     public Boolean doThumb(DoThumbRequest doThumbRequest, HttpServletRequest request) {
+        // 1. 校验参数
+        if (doThumbRequest == null || doThumbRequest.getBlogId() == null) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "请求参数为空");
+        }
+        
+        // 2. 获取登录用户
+        User loginUser = userService.getLoginUser(request);
+        Long blogId = doThumbRequest.getBlogId();
+        
+        // 3. 外部预检查（冷热数据分离优化）
+        Boolean exists = this.hasThumb(blogId, loginUser.getId());
+        if (exists) {
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "请勿重复点赞");
+        }
+        
+        // 4. 构建Redis键
+        String timeSlice = getTimeSlice();
+        String tempThumbKey = RedisKeyUtil.getTempThumbKey(timeSlice);
+        String userThumbKey = RedisKeyUtil.getUserThumbKey(loginUser.getId());
+        
+        // 5. 执行Lua脚本
+        Long result = stringRedisTemplate.execute(
+                RedisLuaScriptConstant.THUMB_SCRIPT,
+                Arrays.asList(tempThumbKey, userThumbKey),
+                loginUser.getId().toString(),
+                blogId.toString()
+        );
+        
+        // 6. 处理执行结果
+        if (result != null && result.equals(LuaStatusEnum.FAIL.getValue())) {
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "点赞失败，已点赞");
+        }
+        
+        boolean success = result != null && result.equals(LuaStatusEnum.SUCCESS.getValue());
+        
+        // 7. 如果Lua脚本执行成功，更新本地缓存
+        if (success) {
+            // 清理可能存在的删除标记（用户重新点赞后应该清除之前的取消点赞标记）
+            String deletedKey = ThumbConstant.USER_THUMB_DELETED_KEY_PREFIX + loginUser.getId();
+            stringRedisTemplate.opsForHash().delete(deletedKey, blogId.toString());
+            
+            // 添加到布隆过滤器
+            String bloomKey = generateBloomKey(loginUser.getId(), blogId);
+            thumbBloomFilter.put(bloomKey);
+            
+            // 根据冷热数据策略选择缓存过期时间
+            Boolean isHot = isHotData(blogId);
+            long expireTime;
+            if (isHot) {
+                expireTime = System.currentTimeMillis() + ThumbConstant.HOT_DATA_CACHE_EXPIRE_TIME;
+                log.info("点赞热数据，使用长缓存时间: blogId={}", blogId);
+            } else {
+                expireTime = System.currentTimeMillis() + ThumbConstant.COLD_DATA_CACHE_EXPIRE_TIME;
+                log.info("点赞冷数据，使用短缓存时间: blogId={}", blogId);
+            }
+            
+            // 存入用户点赞状态缓存（使用JSON格式存储过期时间，thumbId用临时ID）
+            ThumbCacheData cacheData = new ThumbCacheData("temp_" + System.currentTimeMillis(), expireTime);
+            stringRedisTemplate.opsForHash().put(
+                    ThumbConstant.USER_THUMB_KEY_PREFIX + loginUser.getId(), 
+                    blogId.toString(), 
+                    JSONUtil.toJsonStr(cacheData)
+            );
+            
+            log.info("点赞成功，已更新缓存并清理删除标记: userId={}, blogId={}", loginUser.getId(), blogId);
+        }
+        
+        return success;
+    }
+    
+    @Override
+    public Boolean undoThumb(DoThumbRequest doThumbRequest, HttpServletRequest request) {
+        // 1. 校验参数
+        if (doThumbRequest == null || doThumbRequest.getBlogId() == null) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "请求参数为空");
+        }
+        
+        // 2. 获取登录用户
+        User loginUser = userService.getLoginUser(request);
+        Long blogId = doThumbRequest.getBlogId();
+        
+        // 3. 外部预检查（冷热数据分离优化）
+        Boolean exists = this.hasThumb(blogId, loginUser.getId());
+        if (!exists) {
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "无点赞记录");
+        }
+        
+        // 4. 构建Redis键
+        String timeSlice = getTimeSlice();
+        String tempThumbKey = RedisKeyUtil.getTempThumbKey(timeSlice);
+        String userThumbKey = RedisKeyUtil.getUserThumbKey(loginUser.getId());
+        
+        // 5. 执行Lua脚本
+        Long result = stringRedisTemplate.execute(
+                RedisLuaScriptConstant.UNTHUMB_SCRIPT,
+                Arrays.asList(tempThumbKey, userThumbKey),
+                loginUser.getId().toString(),
+                blogId.toString()
+        );
+        
+        // 6. 处理执行结果
+        if (result != null && result.equals(LuaStatusEnum.FAIL.getValue())) {
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "取消点赞失败，未点赞");
+        }
+        
+        boolean success = result != null && result.equals(LuaStatusEnum.SUCCESS.getValue());
+        
+        // 7. 如果Lua脚本执行成功，清理本地缓存
+        if (success) {
+            // 从用户点赞状态缓存中删除记录
+            stringRedisTemplate.opsForHash().delete(
+                    ThumbConstant.USER_THUMB_KEY_PREFIX + loginUser.getId(), 
+                    blogId.toString()
+            );
+            
+            // 设置临时的"已删除"标记，防止在定时器同步前重复取消点赞
+            // 计算当前数据所在时间片何时会被同步完成
+            long currentTime = System.currentTimeMillis() / 1000; // 转为秒
+            long currentTimeSlice = (currentTime / 10) * 10; // 当前10秒时间片
+            long nextSyncTime = currentTimeSlice + 20; // 延迟2个时间片同步
+            long expireTime = nextSyncTime + 5; // 同步完成后再保留5秒缓冲
+            
+            String deletedKey = ThumbConstant.USER_THUMB_DELETED_KEY_PREFIX + loginUser.getId();
+            stringRedisTemplate.opsForHash().put(
+                    deletedKey, 
+                    blogId.toString(), 
+                    "deleted_" + System.currentTimeMillis()
+            );
+            // 设置精确的过期时间
+            long ttlSeconds = expireTime - (System.currentTimeMillis() / 1000);
+            stringRedisTemplate.expire(deletedKey, java.time.Duration.ofSeconds(Math.max(ttlSeconds, 25)));
+            
+            log.info("取消点赞成功，设置删除标记到{}秒: userId={}, blogId={}", 
+                    expireTime, loginUser.getId(), blogId);
+        }
+        
+        return success;
+    }
+
+    /**
+     * 获取时间片
+     */
+    private String getTimeSlice() {
+        DateTime nowDate = DateUtil.date();
+        
+        return DateUtil.format(nowDate, "HH:mm:") + (DateUtil.second(nowDate) / 10) * 10;
+    }
+
+    /**
+     * 旧版点赞方法（使用分布式锁+编程式事务）
+     */
+    public Boolean doThumbOld(DoThumbRequest doThumbRequest, HttpServletRequest request) {
         //1.校验参数
         if (doThumbRequest == null || doThumbRequest.getBlogId() == null) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "请求参数为空");
@@ -123,8 +283,10 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb>
         });
     }
 
-    @Override
-    public Boolean undoThumb(DoThumbRequest doThumbRequest, HttpServletRequest request) {
+    /**
+     * 旧版取消点赞方法（使用分布式锁+编程式事务）
+     */
+    public Boolean undoThumbOld(DoThumbRequest doThumbRequest, HttpServletRequest request) {
         //1.校验参数
         if (doThumbRequest == null || doThumbRequest.getBlogId() == null) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "请求参数为空");
@@ -169,6 +331,14 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb>
 
     @Override
     public Boolean hasThumb(Long blogId, Long userId) {
+        // 0. 先检查是否有删除标记（防止重复取消点赞）
+        String deletedKey = ThumbConstant.USER_THUMB_DELETED_KEY_PREFIX + userId;
+        Object deletedFlag = stringRedisTemplate.opsForHash().get(deletedKey, blogId.toString());
+        if (deletedFlag != null) {
+            // 存在删除标记，说明已经取消点赞但还未同步到数据库
+            return false;   
+        }
+        
         // 1.先通过布隆过滤器判断是否可能存在
         String bloomKey = generateBloomKey(userId, blogId);
         if (!thumbBloomFilter.mightContain(bloomKey)) {
@@ -236,7 +406,7 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb>
                 log.info("回写热数据点赞记录到缓存: userId={}, blogId={}", userId, blogId);
             }
         }
-        
+      
         return existsInDb;
     }
     
