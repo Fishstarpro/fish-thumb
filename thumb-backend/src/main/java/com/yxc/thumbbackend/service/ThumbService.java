@@ -27,4 +27,26 @@ public interface ThumbService extends IService<Thumb> {
      * @return {@link Boolean }
      */
     Boolean undoThumb(DoThumbRequest doThumbRequest, HttpServletRequest request);
+
+    /**
+     * 是否点赞
+     * @param blogId
+     * @param userId
+     * @return {@link Boolean }
+     */
+    Boolean hasThumb(Long blogId, Long userId);
+    
+    /**
+     * 初始化布隆过滤器
+     * 将数据库中已有的点赞记录加载到布隆过滤器中
+     */
+    void initBloomFilter();
+    
+    /**
+     * 判断博客是否为热数据
+     * @param blogId 博客ID
+     * @return true-热数据，false-冷数据
+     */
+    Boolean isHotData(Long blogId);
+
 }
