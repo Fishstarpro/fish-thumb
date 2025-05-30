@@ -22,7 +22,6 @@ public class BloomFilterInitializer implements ApplicationRunner {
 
     @Override
     public void run(ApplicationArguments args) throws Exception {
-        log.info("开始初始化点赞记录布隆过滤器...");
         try {
             thumbService.initBloomFilter();
             log.info("点赞记录布隆过滤器初始化完成");

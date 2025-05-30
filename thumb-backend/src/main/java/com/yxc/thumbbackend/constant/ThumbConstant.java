@@ -42,6 +42,23 @@ public interface ThumbConstant {
     
     /**
      * 用户点赞删除状态标记key前缀
+     * 用于解决定时任务延迟导致的数据库延迟删除问题
      */
     String USER_THUMB_DELETED_KEY_PREFIX = "thumb:deleted:";
+
+    /**
+     * 用户点赞新增状态标记key前缀
+     * 用于解决定时任务延迟导致的数据库延迟新增问题
+     */
+    String USER_THUMB_ADDED_KEY_PREFIX = "thumb:added:";
+
+    /**
+     * 用户取消点赞,如果本地缓存存在热点key,修改为此值
+     */
+    Long UN_THUMB_CONSTANT = 0L;
+
+    /**
+     * 用户点赞,如果本地缓存存在热点key,修改为此值
+     */
+    Long THUMB_CONSTANT = 1L;
 }
