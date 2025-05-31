@@ -30,7 +30,7 @@ import lombok.extern.slf4j.Slf4j;
  * 定时将 Redis 中的临时点赞数据同步到数据库  
  *  
  */  
-@Component  
+//@Component
 @Slf4j  
 public class SyncThumb2DBJob {  
   

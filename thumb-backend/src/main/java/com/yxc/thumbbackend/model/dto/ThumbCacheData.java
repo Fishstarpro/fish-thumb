@@ -19,11 +19,23 @@ public class ThumbCacheData {
      */
     private Long expireTime;
     
+    /**
+     * 点赞创建时间戳（毫秒）
+     */
+    private Long createTime;
+    
     public ThumbCacheData() {}
     
     public ThumbCacheData(String thumbId, Long expireTime) {
         this.thumbId = thumbId;
         this.expireTime = expireTime;
+        this.createTime = System.currentTimeMillis();
+    }
+    
+    public ThumbCacheData(String thumbId, Long expireTime, Long createTime) {
+        this.thumbId = thumbId;
+        this.expireTime = expireTime;
+        this.createTime = createTime;
     }
     
     /**

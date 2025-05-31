@@ -17,6 +17,11 @@ spring:
       database: 0
       timeout: 5000ms
 
+  # Pulsar
+  pulsar:
+    client:
+      service-url: pulsar://116.196.64.68:6650
+
 # Redisson Config
 redisson:
   address: redis://localhost:6379

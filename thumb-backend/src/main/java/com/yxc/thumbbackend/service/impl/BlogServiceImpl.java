@@ -61,6 +61,10 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog>
         //3.封装并返回blogVO
         BlogVO blogVO = BeanUtil.copyProperties(blog, BlogVO.class);
 
+        blogVO.setCreateTime(blog.getCreatetime());
+
+        blogVO.setThumbCount(blog.getThumbcount());
+
         blogVO.setHasThumb(exists);
 
         return blogVO;
@@ -83,7 +87,9 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog>
         List<BlogVO> blogVOList = blogList.stream()
                 .map(blog -> {
                     BlogVO blogVO = BeanUtil.copyProperties(blog, BlogVO.class);
+                    blogVO.setCreateTime(blog.getCreatetime());
                     blogVO.setHasThumb(blogIdToHasThumbMap.getOrDefault(blog.getId(), false));
+                    blogVO.setThumbCount(blog.getThumbcount());
                     return blogVO;
                 })
                 .collect(Collectors.toList());

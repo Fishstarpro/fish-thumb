@@ -1,12 +1,13 @@
 package com.yxc.thumbbackend.service.impl;
 
+import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
-import com.yxc.thumbbackend.manager.cache.AddResult;
-import com.yxc.thumbbackend.manager.cache.CacheManager;
-import com.yxc.thumbbackend.manager.cache.TopK;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.pulsar.core.PulsarTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -16,6 +17,10 @@ import com.yxc.thumbbackend.constant.RedisLuaScriptConstant;
 import com.yxc.thumbbackend.constant.ThumbConstant;
 import com.yxc.thumbbackend.exception.BusinessException;
 import com.yxc.thumbbackend.exception.ErrorCode;
+import com.yxc.thumbbackend.listener.thumb.msg.ThumbEvent;
+import com.yxc.thumbbackend.manager.cache.AddResult;
+import com.yxc.thumbbackend.manager.cache.CacheManager;
+import com.yxc.thumbbackend.manager.cache.TopK;
 import com.yxc.thumbbackend.mapper.ThumbMapper;
 import com.yxc.thumbbackend.model.dto.DoThumbRequest;
 import com.yxc.thumbbackend.model.dto.ThumbCacheData;
@@ -70,6 +75,9 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb>
     @Resource
     private TopK hotKeyDetector;
 
+    @Resource
+    private PulsarTemplate<ThumbEvent> pulsarTemplate;
+
     /**
      * 点赞锁的key前缀
      */
@@ -82,6 +90,21 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb>
 
     @Override
     public Boolean doThumb(DoThumbRequest doThumbRequest, HttpServletRequest request) {
+        return doThumbWithMQ(doThumbRequest, request);
+    }
+
+    @Override
+    public Boolean undoThumb(DoThumbRequest doThumbRequest, HttpServletRequest request) {
+        return undoThumbWithMQ(doThumbRequest, request);
+    }
+
+    /**
+     * 定时任务版本的点赞
+     * @param doThumbRequest
+     * @param request
+     * @return
+     */
+    private Boolean doThumbWithScheduledTask(DoThumbRequest doThumbRequest, HttpServletRequest request) {
         // 1. 校验参数
         if (doThumbRequest == null || doThumbRequest.getBlogId() == null) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "请求参数为空");
@@ -97,17 +120,33 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb>
             throw new BusinessException(ErrorCode.OPERATION_ERROR, "请勿重复点赞");
         }
 
-        // 4. 构建Redis键
+        // 4. 构建脚本需要的参数
         String timeSlice = getTimeSlice();
         String tempThumbKey = RedisKeyUtil.getTempThumbKey(timeSlice);
         String userThumbKey = RedisKeyUtil.getUserThumbKey(loginUser.getId());
 
+        // 根据冷热数据策略选择缓存过期时间
+        Boolean isHot = isHotData(blogId);
+        long expireTime;
+        if (isHot) {
+            expireTime = System.currentTimeMillis() + ThumbConstant.HOT_DATA_CACHE_EXPIRE_TIME;
+            log.info("点赞热数据，使用长缓存时间: blogId={}", blogId);
+        } else {
+            expireTime = System.currentTimeMillis() + ThumbConstant.COLD_DATA_CACHE_EXPIRE_TIME;
+            log.info("点赞冷数据，使用短缓存时间: blogId={}", blogId);
+        }
+
+        // 存入用户点赞状态缓存（使用JSON格式存储过期时间和创建时间，thumbId用临时ID）
+        long thumbCreateTime = System.currentTimeMillis();
+        String thumbCacheData = JSONUtil.toJsonStr(new ThumbCacheData("temp_" + thumbCreateTime, expireTime, thumbCreateTime));
+
         // 5. 执行Lua脚本
         Long result = stringRedisTemplate.execute(
-                RedisLuaScriptConstant.THUMB_SCRIPT,
+                RedisLuaScriptConstant.SCHEDULED_THUMB_SCRIPT,
                 Arrays.asList(tempThumbKey, userThumbKey),
                 loginUser.getId().toString(),
-                blogId.toString()
+                blogId.toString(),
+                thumbCacheData
         );
 
         // 6. 处理执行结果
@@ -123,35 +162,14 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb>
             String deletedKey = ThumbConstant.USER_THUMB_DELETED_KEY_PREFIX + loginUser.getId();
             stringRedisTemplate.opsForHash().delete(deletedKey, blogId.toString());
 
-            String hashKey = ThumbConstant.USER_THUMB_KEY_PREFIX + loginUser.getId();
-
             // 修改本地缓存中的值
-            cacheManager.putIfPresent(hashKey, blogId.toString(), ThumbConstant.THUMB_CONSTANT);
+            cacheManager.putIfPresent(ThumbConstant.USER_THUMB_KEY_PREFIX + loginUser.getId(), blogId.toString(), ThumbConstant.THUMB_CONSTANT);
 
             // 添加到布隆过滤器
             String bloomKey = generateBloomKey(loginUser.getId(), blogId);
             thumbBloomFilter.put(bloomKey);
 
-            // 根据冷热数据策略选择缓存过期时间
-            Boolean isHot = isHotData(blogId);
-            long expireTime;
-            if (isHot) {
-                expireTime = System.currentTimeMillis() + ThumbConstant.HOT_DATA_CACHE_EXPIRE_TIME;
-                log.info("点赞热数据，使用长缓存时间: blogId={}", blogId);
-            } else {
-                expireTime = System.currentTimeMillis() + ThumbConstant.COLD_DATA_CACHE_EXPIRE_TIME;
-                log.info("点赞冷数据，使用短缓存时间: blogId={}", blogId);
-            }
-
-            // 存入用户点赞状态缓存（使用JSON格式存储过期时间，thumbId用临时ID）
-            ThumbCacheData cacheData = new ThumbCacheData("temp_" + System.currentTimeMillis(), expireTime);
-            stringRedisTemplate.opsForHash().put(
-                    hashKey,
-                    blogId.toString(),
-                    JSONUtil.toJsonStr(cacheData)
-            );
-
-            // 设置临时的"已新增"标记，防止定时任务延迟导致的数据库查询不到记录
+            // 设置临时的"已新增"标记，防止定时任务延迟导致数据库查询不到记录(冷热数据分离,冷数据直接从数据库中查找,如果本地缓存没有)
             // 计算当前数据所在时间片何时会被同步完成
             long currentTime = System.currentTimeMillis() / 1000; // 转为秒
             long currentTimeSlice = (currentTime / 10) * 10; // 当前10秒时间片
@@ -166,7 +184,7 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb>
             );
             // 设置精确的过期时间
             long ttlSeconds = syncExpireTime - (System.currentTimeMillis() / 1000);
-            stringRedisTemplate.expire(addedKey, java.time.Duration.ofSeconds(Math.max(ttlSeconds, 25)));
+            stringRedisTemplate.expire(addedKey, Duration.ofSeconds(Math.max(ttlSeconds, 25)));
 
             log.info("点赞成功，已更新缓存并设置新增标记到{}秒: userId={}, blogId={}", 
                     syncExpireTime, loginUser.getId(), blogId);
@@ -175,8 +193,13 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb>
         return success;
     }
 
-    @Override
-    public Boolean undoThumb(DoThumbRequest doThumbRequest, HttpServletRequest request) {
+    /**
+     * 定时任务版本的取消点赞
+     * @param doThumbRequest
+     * @param request
+     * @return
+     */
+    private Boolean undoThumbWithScheduledTask(DoThumbRequest doThumbRequest, HttpServletRequest request) {
         // 1. 校验参数
         if (doThumbRequest == null || doThumbRequest.getBlogId() == null) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "请求参数为空");
@@ -199,7 +222,7 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb>
 
         // 5. 执行Lua脚本
         Long result = stringRedisTemplate.execute(
-                RedisLuaScriptConstant.UNTHUMB_SCRIPT,
+                RedisLuaScriptConstant.SCHEDULED_UNTHUMB_SCRIPT,
                 Arrays.asList(tempThumbKey, userThumbKey),
                 loginUser.getId().toString(),
                 blogId.toString()
@@ -223,12 +246,6 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb>
 
             cacheManager.putIfPresent(hashKey, blogId.toString(), ThumbConstant.UN_THUMB_CONSTANT);
 
-            // 从用户点赞状态缓存中删除记录
-            stringRedisTemplate.opsForHash().delete(
-                    hashKey,
-                    blogId.toString()
-            );
-
             // 设置临时的"已删除"标记，防止在定时器同步前重复取消点赞
             // 计算当前数据所在时间片何时会被同步完成
             long currentTime = System.currentTimeMillis() / 1000; // 转为秒
@@ -244,7 +261,231 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb>
             );
             // 设置精确的过期时间
             long ttlSeconds = expireTime - (System.currentTimeMillis() / 1000);
-            stringRedisTemplate.expire(deletedKey, java.time.Duration.ofSeconds(Math.max(ttlSeconds, 25)));
+            stringRedisTemplate.expire(deletedKey, Duration.ofSeconds(Math.max(ttlSeconds, 25)));
+
+            log.info("取消点赞成功，清理新增标记并设置删除标记到{}秒: userId={}, blogId={}",
+                    expireTime, loginUser.getId(), blogId);
+        }
+
+        return success;
+    }
+
+    /**
+     * 消息队列版本的点赞
+     * @param doThumbRequest
+     * @param request
+     * @return
+     */
+    private Boolean doThumbWithMQ(DoThumbRequest doThumbRequest, HttpServletRequest request) {
+        // 1. 校验参数
+        if (doThumbRequest == null || doThumbRequest.getBlogId() == null) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "请求参数为空");
+        }
+
+        // 2. 获取登录用户
+        User loginUser = userService.getLoginUser(request);
+        Long blogId = doThumbRequest.getBlogId();
+
+        // 3. 外部预检查（冷热数据分离优化）
+        Boolean exists = this.hasThumb(blogId, loginUser.getId());
+        if (exists) {
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "请勿重复点赞");
+        }
+
+        // 4. 构建脚本需要的参数
+        String userThumbKey = RedisKeyUtil.getUserThumbKey(loginUser.getId());
+
+        // 根据冷热数据策略选择缓存过期时间
+        Boolean isHot = isHotData(blogId);
+        long expireTime;
+        if (isHot) {
+            expireTime = System.currentTimeMillis() + ThumbConstant.HOT_DATA_CACHE_EXPIRE_TIME;
+            log.info("点赞热数据，使用长缓存时间: blogId={}", blogId);
+        } else {
+            expireTime = System.currentTimeMillis() + ThumbConstant.COLD_DATA_CACHE_EXPIRE_TIME;
+            log.info("点赞冷数据，使用短缓存时间: blogId={}", blogId);
+        }
+
+        // 存入用户点赞状态缓存（使用JSON格式存储过期时间和创建时间，thumbId用临时ID）
+        long thumbCreateTime = System.currentTimeMillis();
+        String thumbCacheData = JSONUtil.toJsonStr(new ThumbCacheData("temp_" + thumbCreateTime, expireTime, thumbCreateTime));
+
+        // 5. 执行Lua脚本
+        Long result = stringRedisTemplate.execute(
+                RedisLuaScriptConstant.MQ_THUMB_SCRIPT,
+                Arrays.asList(userThumbKey),
+                blogId.toString(),
+                thumbCacheData
+        );
+
+        // 6. 处理执行结果
+        if (result != null && result.equals(LuaStatusEnum.FAIL.getValue())) {
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "点赞失败，已点赞");
+        }
+
+        boolean success = result != null && result.equals(LuaStatusEnum.SUCCESS.getValue());
+
+        // 7. 如果Lua脚本执行成功，更新缓存
+        if (success) {
+            // 发送消息给MQ(同步数据库)
+            ThumbEvent thumbEvent = ThumbEvent.builder()
+                    .userId(loginUser.getId())
+                    .blogId(blogId)
+                    .type(ThumbEvent.EventType.INCR)
+                    .eventTime(LocalDateTime.now())
+                    .build();
+
+            AtomicReference<Boolean> sendStatus = new AtomicReference<>(true);
+
+            pulsarTemplate.sendAsync("thumb-topic", thumbEvent).exceptionally(ex -> {
+                sendStatus.set(false);
+
+                //消息发送失败,数据库不能完成同步,必须删除redis中的值
+                stringRedisTemplate.opsForHash().delete(userThumbKey, blogId.toString());
+
+                log.error("点赞事件发送失败, userId={}, blogId={}", loginUser.getId(), blogId, ex);
+
+                return null;
+            });
+
+            // 消息发送失败直接返回
+            if (sendStatus.get() == false) {
+                return false;
+            }
+
+            // 清理可能存在的删除标记（用户重新点赞后应该清除之前的取消点赞标记）
+            String deletedKey = ThumbConstant.USER_THUMB_DELETED_KEY_PREFIX + loginUser.getId();
+            stringRedisTemplate.opsForHash().delete(deletedKey, blogId.toString());
+
+            // 修改本地缓存中的值
+            cacheManager.putIfPresent(ThumbConstant.USER_THUMB_KEY_PREFIX + loginUser.getId(), blogId.toString(), ThumbConstant.THUMB_CONSTANT);
+
+            // 添加到布隆过滤器
+            String bloomKey = generateBloomKey(loginUser.getId(), blogId);
+            thumbBloomFilter.put(bloomKey);
+
+            // 设置临时的"已新增"标记，防止在消息队列消费前由于数据库查询不到记录导致重复点赞(冷热数据分离,冷数据直接从数据库中查找,如果本地缓存没有)
+            // 计算当前数据所在时间片何时会被同步完成
+            long currentTime = System.currentTimeMillis() / 1000; // 转为秒
+            long currentTimeSlice = (currentTime / 10) * 10; // 当前10秒时间片
+            long nextSyncTime = currentTimeSlice + 20; // 延迟2个时间片同步
+            long syncExpireTime = nextSyncTime + 5; // 同步完成后再保留5秒缓冲
+
+            String addedKey = ThumbConstant.USER_THUMB_ADDED_KEY_PREFIX + loginUser.getId();
+            stringRedisTemplate.opsForHash().put(
+                    addedKey,
+                    blogId.toString(),
+                    "added_" + System.currentTimeMillis()
+            );
+            // 设置精确的过期时间
+            long ttlSeconds = syncExpireTime - (System.currentTimeMillis() / 1000);
+            stringRedisTemplate.expire(addedKey, Duration.ofSeconds(Math.max(ttlSeconds, 25)));
+
+            log.info("点赞成功，已更新缓存并设置新增标记到{}秒: userId={}, blogId={}",
+                    syncExpireTime, loginUser.getId(), blogId);
+        }
+
+        return success;
+    }
+
+    /**
+     * 消息队列版本的取消点赞
+     * @param doThumbRequest
+     * @param request
+     * @return
+     */
+    private Boolean undoThumbWithMQ(DoThumbRequest doThumbRequest, HttpServletRequest request) {
+        // 1. 校验参数
+        if (doThumbRequest == null || doThumbRequest.getBlogId() == null) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "请求参数为空");
+        }
+
+        // 2. 获取登录用户
+        User loginUser = userService.getLoginUser(request);
+        Long blogId = doThumbRequest.getBlogId();
+
+        // 3. 外部预检查（冷热数据分离优化）
+        Boolean exists = this.hasThumb(blogId, loginUser.getId());
+        if (!exists) {
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "无点赞记录");
+        }
+
+        // 4. 构建Redis键
+        String userThumbKey = RedisKeyUtil.getUserThumbKey(loginUser.getId());
+
+        // 为后续MQ发送消息失败使用
+        String thumbCacheData = (String) stringRedisTemplate.opsForHash().get(userThumbKey, blogId.toString());
+
+        if (thumbCacheData == null) {
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "无点赞记录");
+        }
+
+        // 5. 执行Lua脚本
+        Long result = stringRedisTemplate.execute(
+                RedisLuaScriptConstant.MQ_UNTHUMB_SCRIPT,
+                Arrays.asList(userThumbKey),
+                blogId.toString()
+        );
+
+        // 6. 处理执行结果
+        if (result != null && result.equals(LuaStatusEnum.FAIL.getValue())) {
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "取消点赞失败，未点赞");
+        }
+
+        boolean success = result != null && result.equals(LuaStatusEnum.SUCCESS.getValue());
+
+        // 7. 如果Lua脚本执行成功，清理缓存
+        if (success) {
+            // 发送消息给MQ(同步数据库)
+            ThumbEvent thumbEvent = ThumbEvent.builder()
+                    .userId(loginUser.getId())
+                    .blogId(blogId)
+                    .type(ThumbEvent.EventType.DECR)
+                    .eventTime(LocalDateTime.now())
+                    .build();
+
+            AtomicReference<Boolean> sendStatus = new AtomicReference<>(true);
+
+            pulsarTemplate.sendAsync("thumb-topic", thumbEvent).exceptionally(ex -> {
+                sendStatus.set(false);
+                //消息发送失败,数据库不能完成同步,必须新增redis中的值
+                stringRedisTemplate.opsForHash().put(userThumbKey, blogId.toString(), thumbCacheData);
+
+                log.error("取消点赞事件发送失败, userId={}, blogId={}", loginUser.getId(), blogId, ex);
+
+                return null;
+            });
+
+            // 消息发送失败直接返回
+            if (sendStatus.get() == false) {
+                return false;
+            }
+
+            // 清理可能存在的新增标记（用户取消点赞后应该清除之前的点赞新增标记）
+            String addedKey = ThumbConstant.USER_THUMB_ADDED_KEY_PREFIX + loginUser.getId();
+            stringRedisTemplate.opsForHash().delete(addedKey, blogId.toString());
+
+            // 修改本地缓存中的值
+            String hashKey = ThumbConstant.USER_THUMB_KEY_PREFIX + loginUser.getId();
+
+            cacheManager.putIfPresent(hashKey, blogId.toString(), ThumbConstant.UN_THUMB_CONSTANT);
+
+            // 设置临时的"已删除"标记，防止在消息队列消费前重复取消点赞
+            // 计算当前数据所在时间片何时会被同步完成
+            long currentTime = System.currentTimeMillis() / 1000; // 转为秒
+            long currentTimeSlice = (currentTime / 10) * 10; // 当前10秒时间片
+            long nextSyncTime = currentTimeSlice + 20; // 延迟2个时间片同步
+            long expireTime = nextSyncTime + 5; // 同步完成后再保留5秒缓冲
+
+            String deletedKey = ThumbConstant.USER_THUMB_DELETED_KEY_PREFIX + loginUser.getId();
+            stringRedisTemplate.opsForHash().put(
+                    deletedKey,
+                    blogId.toString(),
+                    "deleted_" + System.currentTimeMillis()
+            );
+            // 设置精确的过期时间
+            long ttlSeconds = expireTime - (System.currentTimeMillis() / 1000);
+            stringRedisTemplate.expire(deletedKey, Duration.ofSeconds(Math.max(ttlSeconds, 25)));
 
             log.info("取消点赞成功，清理新增标记并设置删除标记到{}秒: userId={}, blogId={}",
                     expireTime, loginUser.getId(), blogId);
@@ -311,8 +552,8 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb>
                         log.info("点赞冷数据，使用短缓存时间: blogId={}", doThumbRequest.getBlogId());
                     }
 
-                    // 存入Redis（使用JSON格式存储thumbId和过期时间）
-                    ThumbCacheData cacheData = new ThumbCacheData(thumb.getId().toString(), expireTime);
+                    // 存入Redis（使用JSON格式存储thumbId、过期时间和创建时间）
+                    ThumbCacheData cacheData = new ThumbCacheData(thumb.getId().toString(), expireTime, System.currentTimeMillis());
                     stringRedisTemplate.opsForHash().put(
                             ThumbConstant.USER_THUMB_KEY_PREFIX + loginUser.getId(),
                             doThumbRequest.getBlogId().toString(),
@@ -480,7 +721,7 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb>
             if (thumb != null) {
                 // 热数据使用较长的缓存时间
                 long expireTime = System.currentTimeMillis() + ThumbConstant.HOT_DATA_CACHE_EXPIRE_TIME;
-                ThumbCacheData cacheData = new ThumbCacheData(thumb.getId().toString(), expireTime);
+                ThumbCacheData cacheData = new ThumbCacheData(thumb.getId().toString(), expireTime, thumb.getCreatetime().getTime());
                 stringRedisTemplate.opsForHash().put(redisKey, blogId.toString(), JSONUtil.toJsonStr(cacheData));
 
                 // 确保布隆过滤器中也有这条记录
@@ -517,7 +758,7 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb>
                 if (thumb != null) {
                     // 冷数据使用较短的缓存时间，减少内存占用
                     long expireTime = System.currentTimeMillis() + ThumbConstant.COLD_DATA_CACHE_EXPIRE_TIME;
-                    ThumbCacheData cacheData = new ThumbCacheData(thumb.getId().toString(), expireTime);
+                    ThumbCacheData cacheData = new ThumbCacheData(thumb.getId().toString(), expireTime, thumb.getCreatetime().getTime());
                     stringRedisTemplate.opsForHash().put(redisKey, blogId.toString(), JSONUtil.toJsonStr(cacheData));
 
                     // 确保布隆过滤器中也有这条记录
@@ -553,7 +794,7 @@ public class ThumbServiceImpl extends ServiceImpl<ThumbMapper, Thumb>
             // 将创建时间缓存到Redis（设置较长的过期时间，因为创建时间不会变）
             if (createTime > 0) {
                 stringRedisTemplate.opsForValue().set(cacheKey, String.valueOf(createTime),
-                        java.time.Duration.ofDays(7)); // 缓存7天
+                        Duration.ofDays(7)); // 缓存7天
             }
         }
 
