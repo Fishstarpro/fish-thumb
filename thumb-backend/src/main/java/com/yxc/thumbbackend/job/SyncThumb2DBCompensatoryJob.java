@@ -1,19 +1,16 @@
 package com.yxc.thumbbackend.job;
 
-import java.util.HashSet;
-import java.util.Set;
-
-import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.scheduling.annotation.Scheduled;
-import org.springframework.stereotype.Component;
-
-import com.yxc.thumbbackend.constant.ThumbConstant;
-import com.yxc.thumbbackend.utils.RedisKeyUtil;
-
 import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.ObjUtil;
+import com.yxc.thumbbackend.constant.ThumbConstant;
+import com.yxc.thumbbackend.utils.RedisKeyUtil;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.scheduling.annotation.Scheduled;
+
+import java.util.HashSet;
+import java.util.Set;
 
 /**  
  * 定时将 Redis 中的临时点赞数据同步到数据库的补偿措施  

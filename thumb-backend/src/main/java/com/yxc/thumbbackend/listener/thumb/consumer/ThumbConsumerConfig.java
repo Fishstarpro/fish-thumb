@@ -1,7 +1,5 @@
 package com.yxc.thumbbackend.listener.thumb.consumer;
 
-import java.util.concurrent.TimeUnit;
-
 import org.apache.pulsar.client.api.BatchReceivePolicy;
 import org.apache.pulsar.client.api.ConsumerBuilder;
 import org.apache.pulsar.client.api.DeadLetterPolicy;
@@ -10,6 +8,8 @@ import org.apache.pulsar.client.impl.MultiplierRedeliveryBackoff;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.pulsar.annotation.PulsarListenerConsumerBuilderCustomizer;
+
+import java.util.concurrent.TimeUnit;
 
 /**
  * 批量处理策略配置

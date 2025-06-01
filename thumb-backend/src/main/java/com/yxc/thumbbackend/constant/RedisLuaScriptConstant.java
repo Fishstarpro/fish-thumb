@@ -1,6 +1,6 @@
-package com.yxc.thumbbackend.constant;  
-  
-import org.springframework.data.redis.core.script.DefaultRedisScript;  
+package com.yxc.thumbbackend.constant;
+
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.data.redis.core.script.RedisScript;  
   
 public class RedisLuaScriptConstant {

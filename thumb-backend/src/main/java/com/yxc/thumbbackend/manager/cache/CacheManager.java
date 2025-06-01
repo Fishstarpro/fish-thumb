@@ -2,7 +2,6 @@ package com.yxc.thumbbackend.manager.cache;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
-import com.yxc.thumbbackend.constant.ThumbConstant;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Bean;
 import org.springframework.stereotype.Component;
@@ -28,7 +27,7 @@ public class CacheManager {
                 // 衰减系数  
                 0.92,  
                 // 最小出现 10 次才记录  
-                10  
+                3
         );  
         return hotKeyDetector;  
     }  

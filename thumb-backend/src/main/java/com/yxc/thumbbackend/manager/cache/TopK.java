@@ -1,5 +1,6 @@
-package com.yxc.thumbbackend.manager.cache;  
-import java.util.List;  
+package com.yxc.thumbbackend.manager.cache;
+
+import java.util.List;
 import java.util.concurrent.BlockingQueue;  
 
 public interface TopK {  

@@ -1,16 +1,9 @@
 package com.yxc.thumbbackend.job;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Set;
-
-import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.scheduling.annotation.Scheduled;
-import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
-
+import cn.hutool.core.collection.CollUtil;
+import cn.hutool.core.date.DateTime;
+import cn.hutool.core.date.DateUtil;
+import cn.hutool.core.text.StrPool;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.yxc.thumbbackend.constant.ThumbConstant;
 import com.yxc.thumbbackend.mapper.BlogMapper;
@@ -18,13 +11,16 @@ import com.yxc.thumbbackend.model.entity.Thumb;
 import com.yxc.thumbbackend.model.enums.ThumbTypeEnum;
 import com.yxc.thumbbackend.service.ThumbService;
 import com.yxc.thumbbackend.utils.RedisKeyUtil;
-
-import cn.hutool.core.collection.CollUtil;
-import cn.hutool.core.date.DateTime;
-import cn.hutool.core.date.DateUtil;
-import cn.hutool.core.text.StrPool;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
 
 /**  
  * 定时将 Redis 中的临时点赞数据同步到数据库  

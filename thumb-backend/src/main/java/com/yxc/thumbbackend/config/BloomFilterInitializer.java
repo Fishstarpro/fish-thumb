@@ -1,13 +1,11 @@
 package com.yxc.thumbbackend.config;
 
+import com.yxc.thumbbackend.service.ThumbService;
+import jakarta.annotation.Resource;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.stereotype.Component;
-
-import com.yxc.thumbbackend.service.ThumbService;
-
-import jakarta.annotation.Resource;
-import lombok.extern.slf4j.Slf4j;
 
 /**
  * 布隆过滤器初始化器

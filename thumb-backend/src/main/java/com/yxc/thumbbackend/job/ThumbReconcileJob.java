@@ -1,12 +1,14 @@
 package com.yxc.thumbbackend.job;
 
-import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.Optional;
-import java.util.Set;
-import java.util.stream.Collectors;
-
+import cn.hutool.json.JSONUtil;
+import com.google.common.collect.Sets;
+import com.yxc.thumbbackend.constant.ThumbConstant;
+import com.yxc.thumbbackend.listener.thumb.msg.ThumbEvent;
+import com.yxc.thumbbackend.model.dto.ThumbCacheData;
+import com.yxc.thumbbackend.model.entity.Thumb;
+import com.yxc.thumbbackend.service.ThumbService;
+import jakarta.annotation.Resource;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.Cursor;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.ScanOptions;
@@ -14,16 +16,12 @@ import org.springframework.pulsar.core.PulsarTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
-import com.google.common.collect.Sets;
-import com.yxc.thumbbackend.constant.ThumbConstant;
-import com.yxc.thumbbackend.listener.thumb.msg.ThumbEvent;
-import com.yxc.thumbbackend.model.dto.ThumbCacheData;
-import com.yxc.thumbbackend.model.entity.Thumb;
-import com.yxc.thumbbackend.service.ThumbService;
-
-import cn.hutool.json.JSONUtil;
-import jakarta.annotation.Resource;
-import lombok.extern.slf4j.Slf4j;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 @Service  
 @Slf4j  
