@@ -34,3 +34,4 @@ build/
 
 ### CUSTOM ###
 out/
+application-local.yml
