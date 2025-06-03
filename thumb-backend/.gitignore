@@ -35,3 +35,4 @@ build/
 ### CUSTOM ###
 out/
 application-local.yml
+application-ha.yml

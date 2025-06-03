@@ -2,6 +2,7 @@ package com.yxc.thumbbackend.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.yxc.thumbbackend.annotation.ReadOnly;
 import com.yxc.thumbbackend.mapper.BlogMapper;
 import com.yxc.thumbbackend.model.entity.Blog;
 import com.yxc.thumbbackend.model.entity.User;
@@ -40,6 +41,7 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog>
     private StringRedisTemplate stringRedisTemplate;
 
     @Override
+    @ReadOnly  // 标记为只读方法，使用从库
     public BlogVO getBlogVOById(long blogId, HttpServletRequest request) {
         //1.blog表中查询blog
         Blog blog = this.getById(blogId);
@@ -69,6 +71,7 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog>
     }
 
     @Override
+    @ReadOnly  // 标记为只读方法，使用从库
     public List<BlogVO> getBlogVOList(List<Blog> blogList, HttpServletRequest request) {
         // 获取当前登录用户
         User loginUser = userService.getLoginUser(request);

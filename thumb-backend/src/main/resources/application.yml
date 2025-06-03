@@ -1,19 +1,10 @@
 spring:
   application.name: thumb-backend
-  ## application-local.yml存放了TiDB的数据库地址
-  profiles:
-    active: local
-  # DataSource Config
-#  datasource:
-#    driver-class-name: com.mysql.cj.jdbc.Driver
-#    url: jdbc:mysql://localhost:3306/thumb_db?useUnicode=true&characterEncoding=utf-8&serverTimezone=GMT%2B8
-#    username: root
-#    password: Yxc13731926265
 
   # Redis Config
   data:
     redis:
-      host: localhost
+      host: 116.196.64.68
       port: 6379
       password: 
       database: 0
@@ -24,9 +15,20 @@ spring:
     client:
       service-url: pulsar://116.196.64.68:6650
 
+# 里面配置了数据库主从的地址,实现数据库高可用
+  profiles:
+    active: ha
+  # DataSource Config
+#  datasource:
+#    driver-class-name: com.mysql.cj.jdbc.Driver
+#    url: jdbc:mysql://localhost:3306/thumb_db?useUnicode=true&characterEncoding=utf-8&serverTimezone=GMT%2B8
+#    username: root
+#    password: Yxc13731926265
+
+
 # Redisson Config
 redisson:
-  address: redis://localhost:6379
+  address: redis://116.196.64.68:6379
   password: 
   database: 0
   timeout: 3000
@@ -66,6 +68,18 @@ knife4j:
   setting:
     language: zh_cn
 
+# 整合 Prometheus + Grafana
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, prometheus
+  metrics:
+    distribution:
+      percentiles:
+        http:
+          server:
+            requests: 0.5, 0.75, 0.9, 0.95, 0.99
 
 
 
